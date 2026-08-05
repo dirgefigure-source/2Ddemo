@@ -1,16 +1,19 @@
 using UnityEngine;
-using UnityEngine.InputSystem;
 
 /// <summary>
-/// 最简单的果冻效果：
-/// A、D 控制左右晃动，空格模拟落地压扁。
+/// 控制角色外观的倾斜、晃动和压扁回弹。
+/// 挂在 Visual 对象上。
 /// </summary>
-public class SimpleJelly : MonoBehaviour
+public sealed class SimpleJelly : MonoBehaviour
 {
+    [Header("移动倾斜")]
+    [Tooltip("角色达到最大速度时的倾斜角度")]
+    [SerializeField] private float moveLeanAngle = 12f;
+
     [Header("左右晃动")]
     [SerializeField] private float rotationStiffness = 80f;
     [SerializeField] private float rotationDamping = 12f;
-    [SerializeField] private float maxAngle = 15f;
+    [SerializeField] private float maxAngle = 18f;
 
     [Header("压扁回弹")]
     [SerializeField] private float squashStiffness = 100f;
@@ -20,6 +23,7 @@ public class SimpleJelly : MonoBehaviour
     private Vector3 originalScale;
     private Quaternion originalRotation;
 
+    private float targetAngle;
     private float currentAngle;
     private float angleVelocity;
 
@@ -34,36 +38,24 @@ public class SimpleJelly : MonoBehaviour
 
     private void Update()
     {
-        // 仅用于测试。
-        if (Keyboard.current.aKey.wasPressedThisFrame)
-        {
-            Kick(80f, 0f);
-        }
-
-        if (Keyboard.current.dKey.wasPressedThisFrame)
-        {
-            Kick(-80f, 0f);
-        }
-
-        if (Keyboard.current.spaceKey.wasPressedThisFrame)
-        {
-            // 模拟角色落地。
-            Kick(Random.Range(-25f, 25f), 2.2f);
-        }
-
+        // 防止某一帧特别卡时，弹簧计算突然失控。
         float deltaTime = Mathf.Min(Time.deltaTime, 1f / 30f);
 
+        // 身体朝目标倾斜角度回弹。
         UpdateSpring(
             ref currentAngle,
             ref angleVelocity,
+            targetAngle,
             rotationStiffness,
             rotationDamping,
             deltaTime
         );
-
+        
+        // 压扁数值始终朝 0 恢复。
         UpdateSpring(
             ref currentSquash,
             ref squashVelocity,
+            0f,
             squashStiffness,
             squashDamping,
             deltaTime
@@ -81,12 +73,10 @@ public class SimpleJelly : MonoBehaviour
             maxSquash
         );
 
-        // 绕 Z 轴左右旋转。
         transform.localRotation =
             originalRotation *
             Quaternion.Euler(0f, 0f, currentAngle);
 
-        // 横向变宽，纵向变矮。
         transform.localScale = new Vector3(
             originalScale.x * (1f + currentSquash),
             originalScale.y * (1f - currentSquash),
@@ -95,9 +85,26 @@ public class SimpleJelly : MonoBehaviour
     }
 
     /// <summary>
-    /// 给果冻施加一次力量。
-    /// tiltImpulse 控制左右晃动。
-    /// squashImpulse 控制压扁程度。
+    /// 设置移动倾斜。
+    /// normalizedSpeed 通常在 -1 到 1 之间：
+    /// -1 表示全速向左，1 表示全速向右。
+    /// </summary>
+    public void SetMoveLean(float normalizedSpeed, float leanMultiplier = 1f)
+    {
+        normalizedSpeed = Mathf.Clamp(
+            normalizedSpeed,
+            -1f,
+            1f
+        );
+        
+        leanMultiplier = Mathf.Max(0f, leanMultiplier);
+        
+        // 向右移动时，需要顺时针旋转，也就是负的 Z 角度。
+        targetAngle = -normalizedSpeed * moveLeanAngle * leanMultiplier;
+    }
+
+    /// <summary>
+    /// 给角色施加一次额外冲击。
     /// </summary>
     public void Kick(float tiltImpulse, float squashImpulse)
     {
@@ -106,17 +113,20 @@ public class SimpleJelly : MonoBehaviour
     }
 
     private static void UpdateSpring(
-        ref float position,
+        ref float current,
         ref float velocity,
+        float target,
         float stiffness,
         float damping,
         float deltaTime)
     {
+        float distanceFromTarget = current - target;
+
         float acceleration =
-            -stiffness * position -
+            -stiffness * distanceFromTarget -
             damping * velocity;
 
         velocity += acceleration * deltaTime;
-        position += velocity * deltaTime;
+        current += velocity * deltaTime;
     }
 }
