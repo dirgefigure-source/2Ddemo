@@ -2,81 +2,88 @@ using UnityEngine;
 using UnityEngine.InputSystem;
 
 /// <summary>
-/// 2D 平滑跟随镜头。
+/// 带屏幕安全区的 2D 镜头。
 ///
-/// 正常情况下角色位于镜头中央。
-/// 按住观察键时，镜头向角色最后移动的方向推进。
+/// 角色在安全区内移动时，相机保持不动；
+/// 角色离开安全区时，相机只移动必要距离。
+///
+/// 挂在 Main Camera 上。
+/// 适用于 Unity 6000.3.20f1 和新版 Input System。
 /// </summary>
+[RequireComponent(typeof(Camera))]
 [DisallowMultipleComponent]
 public sealed class CameraFollow2D : MonoBehaviour
 {
     [Header("跟随目标")]
     [SerializeField] private Transform target;
-    [SerializeField] private Rigidbody2D targetBody;
 
-    [Header("基础画面位置")]
-    [Tooltip("相机相对角色的位置。Y 为正时，角色显示在屏幕偏下方。")]
-    [SerializeField] private Vector2 offset =
+    [Tooltip("用于取得角色最后朝向")]
+    [SerializeField] private PlayerMove2D movement;
+
+    [Header("基础构图")]
+    [Tooltip("相机相对于安全区中心的位置。Y 为正时角色显示在屏幕偏下。")]
+    [SerializeField] private Vector2 framingOffset =
         new Vector2(0f, 1.1f);
 
-    [Tooltip("观察时，镜头向前移动的距离。")]
-    [Min(0f)]
-    [SerializeField] private float observeDistance = 3f;
+    [Tooltip("相机固定使用的 Z 坐标")]
+    [SerializeField] private float cameraZ = -10f;
 
-    [Tooltip("按住多长时间才开始观察，避免误触。设为 0 可立即触发。")]
-    [Min(0f)]
-    [SerializeField] private float observeHoldDelay = 0.12f;
+    [Header("安全区")]
+    [Tooltip(
+        "安全区占屏幕宽高的比例。" +
+        "例如 X=0.35 表示安全区宽度约占屏幕的 35%。")]
+    [SerializeField] private Vector2 deadZoneScreenSize =
+        new Vector2(0.35f, 0.22f);
 
-    [Tooltip("进入远处观察所需的平滑时间。")]
-    [Min(0.01f)]
-    [SerializeField] private float observeEnterSmoothTime = 0.4f;
-
-    [Tooltip("松开按键后，镜头返回角色所需的平滑时间。")]
-    [Min(0.01f)]
-    [SerializeField] private float observeExitSmoothTime = 0.3f;
-
-    [Tooltip("角色水平速度超过该数值时，更新其面对方向。")]
-    [Min(0f)]
-    [SerializeField] private float facingSpeedThreshold = 0.15f;
-
-    [Tooltip("游戏开始时，角色默认朝向右边。")]
-    [SerializeField] private bool startFacingRight = true;
-
-    [Header("跟随平滑")]
-    [Tooltip("越小，镜头水平跟随角色越快。")]
+    [Header("镜头平滑")]
+    [Tooltip("相机水平跟随时间，越小越快")]
     [Min(0.01f)]
     [SerializeField] private float horizontalSmoothTime = 0.12f;
 
-    [Tooltip("越小，镜头垂直跟随角色越快。")]
+    [Tooltip("相机垂直跟随时间，越小越快")]
     [Min(0.01f)]
-    [SerializeField] private float verticalSmoothTime = 0.3f;
-    
-    [Header("观察视觉效果")]
+    [SerializeField] private float verticalSmoothTime = 0.22f;
+
+    [Header("远处观察")]
+    [SerializeField] private InputActionReference observeAction;
+
+    [Tooltip("观察时镜头向角色朝向移动的距离")]
+    [Min(0f)]
+    [SerializeField] private float observeDistance = 3f;
+
+    [Tooltip("按住多久后进入观察状态")]
+    [Min(0f)]
+    [SerializeField] private float observeHoldDelay;
+
+    [Tooltip("进入和退出观察状态的平滑时间")]
+    [Min(0.01f)]
+    [SerializeField] private float observeSmoothTime = 0.4f;
+
     [SerializeField] private ObserveVignette observeVignette;
-        
-    private bool previousObserveActive;
-    
-    private float cameraZ;
 
-    private float horizontalFollowVelocity;
-    private float verticalFollowVelocity;
+    private Camera cameraComponent;
 
-    private float facingDirection;
+    // 安全区在世界空间中的中心。
+    // 相机追踪的是它，而不是直接追踪角色。
+    private Vector2 followAnchor;
+
+    private float cameraVelocityX;
+    private float cameraVelocityY;
 
     private float observeHeldTime;
     private bool observeActive;
+    private bool previousObserveActive;
 
     private float currentObserveOffset;
     private float observeOffsetVelocity;
 
-    private bool isKeyDown;
-    public void OnObserve(InputAction.CallbackContext context)
-    {
-        isKeyDown = context.ReadValueAsButton();
-    }
-    
+    private InputAction observeInput;
+    private bool enabledObserveActionHere;
+
     private void Awake()
     {
+        cameraComponent = GetComponent<Camera>();
+
         if (target == null)
         {
             Debug.LogError(
@@ -88,55 +95,170 @@ public sealed class CameraFollow2D : MonoBehaviour
             return;
         }
 
-        if (targetBody == null)
+        if (movement == null)
         {
-            targetBody =
-                target.GetComponent<Rigidbody2D>();
+            movement =
+                target.GetComponent<PlayerMove2D>();
         }
 
-        facingDirection =
-            startFacingRight ? 1f : -1f;
-
-        cameraZ = transform.position.z;
+        if (!cameraComponent.orthographic)
+        {
+            Debug.LogWarning(
+                "CameraFollow2D：当前相机不是 Orthographic。",
+                this
+            );
+        }
 
         SnapToTarget();
     }
 
+    private void OnEnable()
+    {
+        if (observeAction == null ||
+            observeAction.action == null)
+        {
+            return;
+        }
+
+        observeInput = observeAction.action;
+
+        // 如果没有由 PlayerInput 启用，
+        // 则由当前脚本临时负责启用。
+        if (!observeInput.enabled)
+        {
+            observeInput.Enable();
+            enabledObserveActionHere = true;
+        }
+    }
+
+    private void OnDisable()
+    {
+        if (enabledObserveActionHere &&
+            observeInput != null)
+        {
+            observeInput.Disable();
+        }
+
+        enabledObserveActionHere = false;
+
+        if (observeVignette != null)
+        {
+            observeVignette.SetObserving(false);
+        }
+    }
+
     private void Update()
     {
-        UpdateFacingDirection();
         UpdateObserveInput();
     }
 
     private void LateUpdate()
     {
-        if (!target)
+        if (target == null)
         {
             return;
         }
 
+        UpdateFollowAnchor();
         UpdateObserveOffset();
+        UpdateCameraPosition();
+    }
 
+    /// <summary>
+    /// 角色在安全区内时，FollowAnchor 不动。
+    /// 角色越过边界后，只移动足够让角色回到边界的位置。
+    /// </summary>
+    private void UpdateFollowAnchor()
+    {
+        Vector2 targetPosition =
+            target.position;
+
+        float halfViewHeight =
+            cameraComponent.orthographicSize;
+
+        float halfViewWidth =
+            halfViewHeight *
+            cameraComponent.aspect;
+
+        // deadZoneScreenSize 表示安全区占完整屏幕的比例。
+        float halfDeadZoneWidth =
+            halfViewWidth *
+            deadZoneScreenSize.x;
+
+        float halfDeadZoneHeight =
+            halfViewHeight *
+            deadZoneScreenSize.y;
+
+        float leftBoundary =
+            followAnchor.x -
+            halfDeadZoneWidth;
+
+        float rightBoundary =
+            followAnchor.x +
+            halfDeadZoneWidth;
+
+        float bottomBoundary =
+            followAnchor.y -
+            halfDeadZoneHeight;
+
+        float topBoundary =
+            followAnchor.y +
+            halfDeadZoneHeight;
+
+        // 超出右边界：
+        // 将安全区中心向右移动最少的必要距离。
+        if (targetPosition.x > rightBoundary)
+        {
+            followAnchor.x =
+                targetPosition.x -
+                halfDeadZoneWidth;
+        }
+        // 超出左边界。
+        else if (targetPosition.x < leftBoundary)
+        {
+            followAnchor.x =
+                targetPosition.x +
+                halfDeadZoneWidth;
+        }
+
+        // 超出上边界。
+        if (targetPosition.y > topBoundary)
+        {
+            followAnchor.y =
+                targetPosition.y -
+                halfDeadZoneHeight;
+        }
+        // 超出下边界。
+        else if (targetPosition.y < bottomBoundary)
+        {
+            followAnchor.y =
+                targetPosition.y +
+                halfDeadZoneHeight;
+        }
+    }
+
+    private void UpdateCameraPosition()
+    {
         float targetX =
-            target.position.x +
-            offset.x +
+            followAnchor.x +
+            framingOffset.x +
             currentObserveOffset;
 
         float targetY =
-            target.position.y +
-            offset.y;
+            followAnchor.y +
+            framingOffset.y;
 
         float newX = Mathf.SmoothDamp(
             transform.position.x,
             targetX,
-            ref horizontalFollowVelocity,
+            ref cameraVelocityX,
             horizontalSmoothTime
         );
 
         float newY = Mathf.SmoothDamp(
             transform.position.y,
             targetY,
-            ref verticalFollowVelocity,
+            ref cameraVelocityY,
             verticalSmoothTime
         );
 
@@ -147,89 +269,68 @@ public sealed class CameraFollow2D : MonoBehaviour
         );
     }
 
-    /// <summary>
-    /// 根据角色的实际水平速度，记录最后面对的方向。
-    /// </summary>
-    private void UpdateFacingDirection()
-    {
-        if (!targetBody)
-        {
-            return;
-        }
-
-        float horizontalSpeed =
-            targetBody.linearVelocity.x;
-
-        // 速度很小时不更新方向，
-        // 防止微小物理抖动反复改变观察方向。
-        if (Mathf.Abs(horizontalSpeed) <
-            facingSpeedThreshold)
-        {
-            return;
-        }
-
-        facingDirection =
-            Mathf.Sign(horizontalSpeed);
-    }
-
-    /// <summary>
-    /// 检测观察键，并加入短暂的防误触时间。
-    /// </summary>
     private void UpdateObserveInput()
     {
-        if (isKeyDown)
+        bool observeHeld =
+            observeInput != null &&
+            observeInput.IsPressed();
+
+        if (observeHeld)
         {
             observeHeldTime += Time.deltaTime;
 
             observeActive =
-                observeHeldTime >= observeHoldDelay;
+                observeHeldTime >=
+                observeHoldDelay;
         }
         else
         {
             observeHeldTime = 0f;
             observeActive = false;
         }
-        
-        // 只有观察状态真正发生变化时才通知后处理。
-        if (observeActive == previousObserveActive)
+
+        if (observeActive ==
+            previousObserveActive)
         {
             return;
         }
 
-        previousObserveActive = observeActive;
+        previousObserveActive =
+            observeActive;
 
-        if (observeVignette)
+        if (observeVignette != null)
         {
-            observeVignette.SetObserving(observeActive);
+            observeVignette.SetObserving(
+                observeActive
+            );
         }
     }
 
-    /// <summary>
-    /// 平滑改变观察偏移。
-    /// </summary>
     private void UpdateObserveOffset()
     {
-        float targetObserveOffset =
+        float facingDirection =
+            movement != null
+                ? movement.facingDirection
+                : 1f;
+
+        float targetOffset =
             observeActive
-                ? facingDirection * observeDistance
+                ? facingDirection *
+                  observeDistance
                 : 0f;
 
-        float smoothTime =
-            observeActive
-                ? observeEnterSmoothTime
-                : observeExitSmoothTime;
-
-        currentObserveOffset = Mathf.SmoothDamp(
-            currentObserveOffset,
-            targetObserveOffset,
-            ref observeOffsetVelocity,
-            smoothTime
-        );
+        currentObserveOffset =
+            Mathf.SmoothDamp(
+                currentObserveOffset,
+                targetOffset,
+                ref observeOffsetVelocity,
+                observeSmoothTime
+            );
     }
 
     /// <summary>
-    /// 立即把镜头放到角色附近。
-    /// 适合游戏开始或角色重生时调用。
+    /// 立即将安全区和相机放到角色附近。
+    /// 用于游戏开始和角色重生。
     /// </summary>
     public void SnapToTarget()
     {
@@ -238,19 +339,126 @@ public sealed class CameraFollow2D : MonoBehaviour
             return;
         }
 
+        followAnchor =
+            target.position;
+
+        cameraVelocityX = 0f;
+        cameraVelocityY = 0f;
+
         observeHeldTime = 0f;
         observeActive = false;
+        previousObserveActive = false;
 
         currentObserveOffset = 0f;
         observeOffsetVelocity = 0f;
 
-        horizontalFollowVelocity = 0f;
-        verticalFollowVelocity = 0f;
+        if (observeVignette != null)
+        {
+            observeVignette.SetObserving(false);
+        }
 
         transform.position = new Vector3(
-            target.position.x + offset.x,
-            target.position.y + offset.y,
+            followAnchor.x +
+            framingOffset.x,
+
+            followAnchor.y +
+            framingOffset.y,
+
             cameraZ
+        );
+    }
+
+    private void OnValidate()
+    {
+        deadZoneScreenSize.x =
+            Mathf.Clamp(
+                deadZoneScreenSize.x,
+                0f,
+                0.95f
+            );
+
+        deadZoneScreenSize.y =
+            Mathf.Clamp(
+                deadZoneScreenSize.y,
+                0f,
+                0.95f
+            );
+
+        horizontalSmoothTime =
+            Mathf.Max(
+                0.01f,
+                horizontalSmoothTime
+            );
+
+        verticalSmoothTime =
+            Mathf.Max(
+                0.01f,
+                verticalSmoothTime
+            );
+
+        observeSmoothTime =
+            Mathf.Max(
+                0.01f,
+                observeSmoothTime
+            );
+    }
+
+    /// <summary>
+    /// 在 Scene 窗口中绘制安全区。
+    /// 选中 Main Camera 时可见。
+    /// </summary>
+    private void OnDrawGizmosSelected()
+    {
+        Camera currentCamera =
+            cameraComponent != null
+                ? cameraComponent
+                : GetComponent<Camera>();
+
+        if (currentCamera == null ||
+            !currentCamera.orthographic)
+        {
+            return;
+        }
+
+        Vector2 gizmoCenter;
+
+        if (Application.isPlaying)
+        {
+            gizmoCenter = followAnchor;
+        }
+        else if (target != null)
+        {
+            gizmoCenter = target.position;
+        }
+        else
+        {
+            return;
+        }
+
+        float halfViewHeight =
+            currentCamera.orthographicSize;
+
+        float halfViewWidth =
+            halfViewHeight *
+            currentCamera.aspect;
+
+        float width =
+            halfViewWidth *
+            deadZoneScreenSize.x *
+            2f;
+
+        float height =
+            halfViewHeight *
+            deadZoneScreenSize.y *
+            2f;
+
+        Gizmos.DrawWireCube(
+            gizmoCenter,
+            new Vector3(
+                width,
+                height,
+                0f
+            )
         );
     }
 }

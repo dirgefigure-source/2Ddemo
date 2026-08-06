@@ -49,6 +49,21 @@ public sealed class PlayerMove2D : MonoBehaviour
     [Header("加速烟尘")] 
     [SerializeField] private ParticleSystem sprintDust;
     
+    [Header("受击控制")]
+
+    [Tooltip("击退速度衰减到零所需的时间")]
+    [Min(0.01f)]
+    [SerializeField] private float knockbackDuration = 0.3f;
+    
+    public bool ControlsLocked => controlsLocked;
+    public bool IsBeingKnockedBack => knockbackActive;
+    
+    private bool controlsLocked;
+
+    private float knockbackElapsed;
+    private float knockbackStartVelocityX;
+    private bool knockbackActive;
+    
     private float horizontalInput;
     // 跳跃相关
     private bool jumpRequested;
@@ -60,9 +75,13 @@ public sealed class PlayerMove2D : MonoBehaviour
     // 烟尘相关
     private bool sprintDustPlaying;
 
+    // 角色朝向
+    public float facingDirection;
+
     public void OnMove(InputAction.CallbackContext context)
     {
         horizontalInput = context.ReadValue<Vector2>().x;
+        facingDirection = Mathf.Sign(horizontalInput);
     }
 
     public void OnJump(InputAction.CallbackContext context)
@@ -133,15 +152,53 @@ public sealed class PlayerMove2D : MonoBehaviour
         
         float currentAcceleration = acceleration * (isSprinting ? sprintAcceleration : 1f);
 
-        var targetSpeed = horizontalInput * currentMaxSpeed;
+        if (knockbackActive)
+        {
+            knockbackElapsed +=
+                Time.fixedDeltaTime;
 
-        // 当前速度逐渐接近目标速度，
-        // 而不是按键后瞬间达到最大速度。
-        velocity.x = Mathf.MoveTowards(
-            velocity.x,
-            targetSpeed,
-            currentAcceleration * Time.fixedDeltaTime
-        );
+            float progress = Mathf.Clamp01(
+                knockbackElapsed /
+                knockbackDuration
+            );
+
+            // 击退从最大速度平滑衰减到零。
+            float remaining =
+                1f -
+                Mathf.SmoothStep(
+                    0f,
+                    1f,
+                    progress
+                );
+
+            velocity.x =
+                knockbackStartVelocityX *
+                remaining;
+
+            if (progress >= 1f)
+            {
+                knockbackActive = false;
+                velocity.x = 0f;
+            }
+        }
+        else
+        {
+            float permittedInput =
+                controlsLocked
+                    ? 0f
+                    : horizontalInput;
+
+            float targetSpeed =
+                permittedInput *
+                currentMaxSpeed;
+
+            velocity.x = Mathf.MoveTowards(
+                velocity.x,
+                targetSpeed,
+                currentAcceleration *
+                Time.fixedDeltaTime
+            );
+        }
         
         // 处理角色身体倾斜
         if (jelly)
@@ -160,8 +217,7 @@ public sealed class PlayerMove2D : MonoBehaviour
             // 刚进入加速状态时，给身体一次轻微冲击
             if (isSprinting && !wasSprinting)
             {
-                float sprintDirection = Mathf.Sign(horizontalInput);
-                jelly.Kick(-sprintDirection * 18f, -0.3f);
+                jelly.Kick(-facingDirection * 18f, -0.3f);
             }
             
             // 待机呼吸
@@ -253,5 +309,62 @@ public sealed class PlayerMove2D : MonoBehaviour
             // 停止生成心粒子，已经生成的粒子会自然消失
             sprintDust.Stop(withChildren:true, stopBehavior:ParticleSystemStopBehavior.StopEmitting);
         }
+    }
+    
+    /// <summary>
+    /// 锁定或恢复玩家输入。
+    /// 脚本本身不会被禁用，因此仍能统一控制 Rigidbody2D。
+    /// </summary>
+    public void SetControlsLocked(bool locked)
+    {
+        controlsLocked = locked;
+
+        if (locked)
+        {
+            horizontalInput = 0f;
+            jumpRequested = false;
+        }
+    }
+    
+    /// <summary>
+    /// 开始一次击退。
+    /// Rigidbody2D 仍然只由 PlayerMove2D 负责写入。
+    /// </summary>
+    public void ApplyKnockback(
+        Vector2 hitDirection,
+        float knockbackSpeed)
+    {
+        if (knockbackSpeed <= 0f)
+        {
+            return;
+        }
+
+        if (hitDirection.sqrMagnitude < 0.0001f)
+        {
+            hitDirection = Vector2.up;
+        }
+
+        hitDirection.Normalize();
+
+        knockbackStartVelocityX =
+            hitDirection.x * knockbackSpeed;
+
+        knockbackElapsed = 0f;
+        knockbackActive = true;
+
+        // 垂直击飞只在开始时设置一次，
+        // 后续继续交给重力处理。
+        Vector2 velocity = body.linearVelocity;
+
+        float upwardSpeed =
+            Mathf.Max(0f, hitDirection.y) *
+            knockbackSpeed;
+
+        velocity.y = Mathf.Max(
+            velocity.y,
+            upwardSpeed
+        );
+
+        body.linearVelocity = velocity;
     }
 }
