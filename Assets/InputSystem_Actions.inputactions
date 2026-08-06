@@ -991,6 +991,34 @@
                     "isPartOfComposite": false
                 }
             ]
+        },
+        {
+            "name": "Camera",
+            "id": "91c1bfd0-49a7-4c3a-b704-ea40dfec3393",
+            "actions": [
+                {
+                    "name": "Observe",
+                    "type": "Button",
+                    "id": "75b08553-ea07-4806-9751-fdcf5c6d7a20",
+                    "expectedControlType": "",
+                    "processors": "",
+                    "interactions": "",
+                    "initialStateCheck": false
+                }
+            ],
+            "bindings": [
+                {
+                    "name": "",
+                    "id": "8c09f4dc-9f55-46f5-985f-b37948fd7e89",
+                    "path": "<Keyboard>/c",
+                    "interactions": "",
+                    "processors": "",
+                    "groups": "",
+                    "action": "Observe",
+                    "isComposite": false,
+                    "isPartOfComposite": false
+                }
+            ]
         }
     ],
     "controlSchemes": [
