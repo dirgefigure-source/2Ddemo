@@ -5727,6 +5727,10 @@ MonoBehaviour:
   squashStiffness: 100
   squashDamping: 14
   maxSquash: 0.2
+  breatheDuration: 2.2
+  breatheAmount: 0.015
+  breatheWidthRatio: 0.35
+  idleBlendSpeed: 3
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0

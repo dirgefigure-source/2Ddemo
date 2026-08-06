@@ -142,7 +142,8 @@ public sealed class PlayerMove2D : MonoBehaviour
             targetSpeed,
             currentAcceleration * Time.fixedDeltaTime
         );
-
+        
+        // 处理角色身体倾斜
         if (jelly)
         {
             float normalizedSpeed = 0f;
@@ -162,6 +163,13 @@ public sealed class PlayerMove2D : MonoBehaviour
                 float sprintDirection = Mathf.Sign(horizontalInput);
                 jelly.Kick(-sprintDirection * 18f, -0.3f);
             }
+            
+            // 待机呼吸
+            bool isIdle = isGrounded && 
+                          Mathf.Abs(horizontalInput) < 0.01f &&
+                          Mathf.Abs(velocity.x) < 0.05f;
+            
+            jelly.SetIdle(isIdle);
         }
 
         wasSprinting = isSprinting;
